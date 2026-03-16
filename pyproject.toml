@@ -19,6 +19,7 @@ pydantic = "^2.9.0"
 python-dotenv = "^1.0.1"
 tzdata = "^2024.1"
 pydantic-settings = "^2.6.0"
+openai = "^1.60.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
