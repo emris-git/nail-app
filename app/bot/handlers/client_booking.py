@@ -42,7 +42,11 @@ def clear_client_state(user_id: int) -> None:
     _CLIENT_STATES.pop(user_id, None)
 
 
-@router.message()
+def _in_client_flow(message: Message) -> bool:
+    return get_client_state(message.from_user.id) is not None
+
+
+@router.message(_in_client_flow)
 async def handle_client_flow(message: Message) -> None:
     user_id = message.from_user.id
     state = get_client_state(user_id)
