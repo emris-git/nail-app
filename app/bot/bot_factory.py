@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from .handlers import (
@@ -15,7 +16,10 @@ from .handlers import (
 
 
 def create_bot_and_dispatcher(token: str) -> tuple[Bot, Dispatcher]:
-    bot = Bot(token=token, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
     dp.include_router(client_booking.router)
     dp.include_router(start.router)
