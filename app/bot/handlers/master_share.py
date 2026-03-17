@@ -24,7 +24,8 @@ async def cmd_share(message: Message) -> None:
             await message.answer("Сначала пройдите онбординг через /start.")
             return
 
-        link = f"t.me/<bot_username>?start=master_{master.slug}"
+        bot_me = await message.bot.get_me()
+        link = f"https://t.me/{bot_me.username}?start=master_{master.slug}"
         text = (
             "Ваша персональная ссылка для клиентов:\n"
             f"{link}\n\n"

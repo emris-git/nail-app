@@ -82,9 +82,11 @@ async def master_enter_name(message: Message) -> None:
     finally:
         db.close()
 
+    bot_me = await message.bot.get_me()
+    link = f"https://t.me/{bot_me.username}?start=master_{result.slug}"
     await message.answer(
         f"{ru.MASTER_ONBOARDING_DONE}\n\n"
-        f"Ваша личная ссылка для клиентов:\n"
-        f"t.me/<bot_username>?start=master_{result.slug}"
+        "Ваша личная ссылка для клиентов:\n"
+        f"{link}"
     )
 
