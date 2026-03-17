@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.config import get_settings
 from app.db.base import get_session_maker
 from app.db.models import MasterProfileORM
 
@@ -24,8 +25,14 @@ async def cmd_share(message: Message) -> None:
             await message.answer("Сначала пройдите онбординг через /start.")
             return
 
-        bot_me = await message.bot.get_me()
-        link = f"https://t.me/{bot_me.username}?start=master_{master.slug}"
+        username = get_settings().client_bot_username
+        if not username:
+            await message.answer(
+                "Админ: задайте переменную окружения <b>CLIENT_BOT_USERNAME</b>, "
+                "чтобы формировать ссылку на клиентский бот."
+            )
+            return
+        link = f"https://t.me/{username}?start=master_{master.slug}"
         text = (
             "Ваша персональная ссылка для клиентов:\n"
             f"{link}\n\n"

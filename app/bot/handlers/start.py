@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.parsers import parse_schedule_lines, parse_services_text
 from app.bot.texts import ru
@@ -13,20 +13,15 @@ from app.config import get_settings
 from app.db.base import get_session_maker
 from app.db.models import (
     AvailabilitySlotORM,
-    ClientSavedMasterORM,
     MasterProfileORM,
     ServiceORM,
 )
 from app.adapters.llm.mock import MockPriceListParser
 from app.services.master_service import MasterOnboardingService
-from .client_booking import ClientState, set_client_state
 
 router = Router()
 
-# Выбор роли при /start без payload
-_ROLE_CHOICE_PENDING: set[int] = set()
-
-# Ожидание имени мастера (после выбора роли "Мастер")
+# Ожидание имени мастера (после /start)
 _EXPECT_MASTER_NAME: set[int] = set()
 
 # Онбординг мастера: после имени — услуги, затем расписание
@@ -45,6 +40,38 @@ def _clear_master_onboarding(user_id: int) -> None:
     _MASTER_ONBOARDING.pop(user_id, None)
 
 
+def _build_client_bot_link(payload: str = "") -> str | None:
+    """
+    Returns a deep link to the public client bot, or None if CLIENT_BOT_USERNAME is not configured.
+    payload should be a raw /start payload without leading spaces.
+    """
+    username = get_settings().client_bot_username
+    if not username:
+        return None
+    payload_part = f"?start={payload}" if payload else ""
+    return f"https://t.me/{username}{payload_part}"
+
+
+async def _answer_client_redirect(message: Message, payload: str = "") -> None:
+    link = _build_client_bot_link(payload=payload)
+    if not link:
+        await message.answer(
+            "Клиентская запись вынесена в отдельный бот.\n\n"
+            "Админ: задайте переменную окружения <b>CLIENT_BOT_USERNAME</b> для ссылки на клиентский бот."
+        )
+        return
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть клиентский бот", url=link)],
+        ]
+    )
+    await message.answer(
+        "Для записи, выбора услуг и слотов перейдите в клиентский бот:\n"
+        f"{link}",
+        reply_markup=keyboard,
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     parts = message.text.split(maxsplit=1)
@@ -52,162 +79,29 @@ async def cmd_start(message: Message) -> None:
     user_id = message.from_user.id
 
     if payload.startswith("master_"):
-        slug = payload.removeprefix("master_")
-        db_session_maker = get_session_maker()
-        db = db_session_maker()
-        try:
-            master = (
-                db.query(MasterProfileORM)
-                .filter(MasterProfileORM.slug == slug)
-                .one_or_none()
-            )
-            if master is None:
-                await message.answer("Мастер с такой ссылкой не найден.")
-                return
-
-            # Добавляем мастера в список клиента (по ссылке)
-            saved = (
-                db.query(ClientSavedMasterORM)
-                .filter(
-                    ClientSavedMasterORM.tg_user_id == user_id,
-                    ClientSavedMasterORM.master_id == master.id,
-                )
-                .first()
-            )
-            if not saved:
-                db.add(
-                    ClientSavedMasterORM(tg_user_id=user_id, master_id=master.id)
-                )
-                db.commit()
-
-            services = (
-                db.query(ServiceORM)
-                .filter(ServiceORM.master_id == master.id, ServiceORM.is_active.is_(True))
-                .order_by(ServiceORM.id)
-                .all()
-            )
-            if not services:
-                await message.answer("У мастера пока нет услуг для записи.")
-                return
-
-            lines = [
-                f"Запись к мастеру {master.display_name}",
-                "",
-                "Выберите услугу (номер):",
-            ]
-            for idx, s in enumerate(services, start=1):
-                lines.append(f"{idx}. {s.name} — {int(s.price)}, {s.duration_minutes} мин")
-
-            set_client_state(
-                user_id,
-                ClientState(master_id=master.id, stage="choose_service"),
-            )
-
-            await message.answer("\n".join(lines))
-            return
-        finally:
-            db.close()
-
-    # Нет payload — кнопки (и текст как запасной вариант)
-    _ROLE_CHOICE_PENDING.add(user_id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Мастер", callback_data="role:master")],
-        [InlineKeyboardButton(text="Клиент", callback_data="role:client")],
-    ])
-    await message.answer("Кем вы являетесь?", reply_markup=keyboard)
-
-
-@router.callback_query(F.data.in_({"role:master", "role:client"}))
-async def handle_role_callback(callback: CallbackQuery) -> None:
-    await callback.answer()
-    user_id = callback.from_user.id
-    _ROLE_CHOICE_PENDING.discard(user_id)
-    if callback.data == "role:master":
-        _EXPECT_MASTER_NAME.add(user_id)
-        await callback.message.answer(ru.MASTER_ENTER_NAME)
+        # Клиентский flow вынесен в отдельный публичный бот — просто редиректим с тем же payload.
+        await _answer_client_redirect(message, payload=payload)
         return
-    # role:client
+
+    # Роль больше не выбираем: этот бот только для мастеров.
+    # Если мастер уже существует — показываем команды; иначе начинаем онбординг.
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
-        masters = (
+        master = (
             db.query(MasterProfileORM)
-            .join(
-                ClientSavedMasterORM,
-                (ClientSavedMasterORM.master_id == MasterProfileORM.id)
-                & (ClientSavedMasterORM.tg_user_id == user_id),
-            )
-            .order_by(MasterProfileORM.display_name)
-            .all()
+            .filter(MasterProfileORM.user_id == user_id)
+            .one_or_none()
         )
-        if not masters:
-            await callback.message.answer(ru.CLIENT_NO_MASTERS)
-            return
-        set_client_state(
-            user_id,
-            ClientState(
-                master_id=0,
-                stage="choose_master",
-                master_ids=[m.id for m in masters],
-            ),
-        )
-        lines = [ru.CLIENT_CHOOSE_MASTER, ""]
-        for idx, m in enumerate(masters, start=1):
-            lines.append(f"{idx}. {m.display_name}")
-        await callback.message.answer("\n".join(lines))
     finally:
         db.close()
 
-
-@router.message(
-    F.text & ~F.via_bot,
-    lambda m: m.from_user.id in _ROLE_CHOICE_PENDING,
-)
-async def handle_role_choice(message: Message) -> None:
-    user_id = message.from_user.id
-    _ROLE_CHOICE_PENDING.discard(user_id)
-    text = (message.text or "").strip().lower()
-
-    if text in ("мастер", "1", "master"):
-        _EXPECT_MASTER_NAME.add(user_id)
-        await message.answer(ru.MASTER_ENTER_NAME)
+    if master is not None:
+        await message.answer(ru.MASTER_COMMANDS)
         return
 
-    if text in ("клиент", "2", "client"):
-        db_session_maker = get_session_maker()
-        db = db_session_maker()
-        try:
-            masters = (
-                db.query(MasterProfileORM)
-                .join(
-                    ClientSavedMasterORM,
-                    (ClientSavedMasterORM.master_id == MasterProfileORM.id)
-                    & (ClientSavedMasterORM.tg_user_id == user_id),
-                )
-                .order_by(MasterProfileORM.display_name)
-                .all()
-            )
-            if not masters:
-                await message.answer(ru.CLIENT_NO_MASTERS)
-                return
-            set_client_state(
-                user_id,
-                ClientState(
-                    master_id=0,
-                    stage="choose_master",
-                    master_ids=[m.id for m in masters],
-                ),
-            )
-            lines = [ru.CLIENT_CHOOSE_MASTER, ""]
-            for idx, m in enumerate(masters, start=1):
-                lines.append(f"{idx}. {m.display_name}")
-            await message.answer("\n".join(lines))
-        finally:
-            db.close()
-        return
-
-    _ROLE_CHOICE_PENDING.add(user_id)
-    await message.answer("Напишите <b>мастер</b> или <b>клиент</b> (или 1 / 2).")
+    _EXPECT_MASTER_NAME.add(user_id)
+    await message.answer(ru.MASTER_ENTER_NAME)
 
 
 @router.message(
@@ -243,8 +137,15 @@ async def master_onboarding_step(message: Message) -> None:
         finally:
             db.close()
         if slug:
-            bot_me = await message.bot.get_me()
-            link = f"https://t.me/{bot_me.username}?start=master_{slug}"
+            link = _build_client_bot_link(payload=f"master_{slug}")
+            if not link:
+                await message.answer(
+                    f"{ru.MASTER_ONBOARDING_DONE}\n\n"
+                    "Админ: задайте переменную окружения <b>CLIENT_BOT_USERNAME</b>, "
+                    "чтобы формировать ссылку на клиентский бот."
+                )
+                await message.answer(ru.MASTER_COMMANDS)
+                return
             await message.answer(
                 f"{ru.MASTER_ONBOARDING_DONE}\n\n"
                 "Ваша личная ссылка для клиентов:\n"

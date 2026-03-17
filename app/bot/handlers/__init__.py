@@ -1,5 +1,4 @@
 from . import (
-    client_booking,
     start,
     master_services,
     master_schedule,
@@ -9,7 +8,6 @@ from . import (
 )
 
 __all__ = [
-    "client_booking",
     "start",
     "master_services",
     "master_schedule",

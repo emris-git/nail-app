@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -80,7 +80,11 @@ async def cmd_schedule(message: Message) -> None:
         )
         booked_set: set[tuple[date, time]] = set()
         for b in bookings:
-            local = b.start_at.astimezone(tz)
+            start_at = b.start_at
+            if start_at.tzinfo is None:
+                # SQLite may return naive datetimes even when timezone=True.
+                start_at = start_at.replace(tzinfo=timezone.utc)
+            local = start_at.astimezone(tz)
             booked_set.add((local.date(), time(local.hour, local.minute)))
 
         slot_list = [(s.slot_date, s.slot_time) for s in slots]

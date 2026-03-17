@@ -20,6 +20,7 @@ python-dotenv = "^1.0.1"
 tzdata = "^2024.1"
 pydantic-settings = "^2.6.0"
 openai = "^1.60.0"
+nail-app-core = { path = "../nail-app-core", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

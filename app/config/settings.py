@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     bot_webhook_secret: str = Field("secret", alias="BOT_WEBHOOK_SECRET")
     default_timezone: str = Field("Europe/Moscow", alias="DEFAULT_TIMEZONE")
 
+    # External bots
+    # Username of the public client bot (without @). Used to build deep links like https://t.me/<username>?start=master_<slug>
+    client_bot_username: Optional[str] = Field(None, alias="CLIENT_BOT_USERNAME")
+    # Shared secret for bot->API signing (client bot -> server API)
+    client_api_hmac_secret: Optional[str] = Field(None, alias="CLIENT_API_HMAC_SECRET")
+
     # LLM config
     llm_provider: Literal["mock", "openai"] = Field("mock", alias="LLM_PROVIDER")
     llm_api_base: Optional[str] = Field(None, alias="LLM_API_BASE")
