@@ -1285,24 +1285,6 @@ files = [
 ]
 
 [[package]]
-name = "nail-app-core"
-version = "0.1.0"
-description = "Shared domain, DB models, and services for nail-app bots."
-optional = false
-python-versions = "^3.12"
-groups = ["main"]
-files = []
-develop = true
-
-[package.dependencies]
-pydantic = "^2.9.0"
-SQLAlchemy = "^2.0.36"
-
-[package.source]
-type = "directory"
-url = "../nail-app-core"
-
-[[package]]
 name = "openai"
 version = "1.109.1"
 description = "The official Python library for the openai API"
@@ -2560,4 +2542,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "855c8c72073d22d7accb0683ece31938a3c33d1cd9fad4fa9c83954e5b3435f6"
+content-hash = "d063daf058a6b29d76fe4682204f3451ff4633b19a745b807c37f21cc098d2bb"
