@@ -215,6 +215,11 @@ async def master_onboarding_step(message: Message) -> None:
     master_id, step = state
     text = (message.text or "").strip()
 
+    # Не перехватываем команды во время онбординга (кроме /готово),
+    # чтобы /services, /schedule и другие команды работали всегда.
+    if text.startswith("/") and text != "/готово":
+        return
+
     if text == "/готово":
         if step == "services":
             _set_master_onboarding(user_id, master_id, "schedule")
