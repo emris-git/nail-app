@@ -27,6 +27,20 @@ from app.services.master_service import MasterOnboardingService
 
 router = Router()
 
+# Labels for master command buttons (reply keyboard)
+_BTN_MY_SERVICES = "Мои услуги"
+_BTN_SLOTS = "Слоты"
+_BTN_BOOKINGS = "Записи"
+_BTN_CLIENTS = "Клиенты"
+_BTN_LINK = "Ссылка для клиента"
+_MASTER_MENU_TEXTS: set[str] = {
+    _BTN_MY_SERVICES,
+    _BTN_SLOTS,
+    _BTN_BOOKINGS,
+    _BTN_CLIENTS,
+    _BTN_LINK,
+}
+
 # Ожидание имени мастера (после /start)
 _EXPECT_MASTER_NAME: set[int] = set()
 
@@ -82,11 +96,37 @@ def _master_commands_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         resize_keyboard=True,
         keyboard=[
-            [KeyboardButton(text="/services"), KeyboardButton(text="/schedule")],
-            [KeyboardButton(text="/bookings"), KeyboardButton(text="/clients")],
-            [KeyboardButton(text="/link")],
+            [KeyboardButton(text=_BTN_MY_SERVICES), KeyboardButton(text=_BTN_SLOTS)],
+            [KeyboardButton(text=_BTN_BOOKINGS), KeyboardButton(text=_BTN_CLIENTS)],
+            [KeyboardButton(text=_BTN_LINK)],
         ],
     )
+
+
+@router.message(
+    F.text,
+    lambda m: (m.text or "").strip() in _MASTER_MENU_TEXTS,
+)
+async def master_menu_buttons(message: Message) -> None:
+    text = (message.text or "").strip()
+    # local imports to avoid circular imports at module load time
+    from app.bot.handlers import master_bookings, master_clients, master_schedule, master_services, master_share
+
+    if text == _BTN_MY_SERVICES:
+        await master_services.cmd_services(message)
+        return
+    if text == _BTN_SLOTS:
+        await master_schedule.cmd_schedule(message)
+        return
+    if text == _BTN_BOOKINGS:
+        await master_bookings.cmd_bookings(message)
+        return
+    if text == _BTN_CLIENTS:
+        await master_clients.cmd_clients(message)
+        return
+    if text == _BTN_LINK:
+        await master_share.cmd_share(message)
+        return
 
 
 @router.message(CommandStart())
@@ -133,6 +173,10 @@ async def master_onboarding_step(message: Message) -> None:
         return
     master_id, step = state
     text = (message.text or "").strip()
+
+    # Allow menu buttons to be handled by master_menu_buttons.
+    if text in _MASTER_MENU_TEXTS:
+        return
 
     # Не перехватываем команды во время онбординга (кроме /готово),
     # чтобы /services, /schedule и другие команды работали всегда.
@@ -246,6 +290,9 @@ async def master_enter_name(message: Message) -> None:
     """
     user_id = message.from_user.id
     text = (message.text or "").strip()
+    if text in _MASTER_MENU_TEXTS:
+        await message.answer(ru.MASTER_ENTER_NAME, reply_markup=_master_commands_keyboard())
+        return
     # Команды не считаем именем: оставляем ожидание имени активным
     if text.startswith("/"):
         await message.answer(ru.MASTER_ENTER_NAME)
