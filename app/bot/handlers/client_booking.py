@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict
 
 from aiogram import Router
 from aiogram.types import Message
+from zoneinfo import ZoneInfo
 
 from app.bot.texts import ru
 from app.adapters.time_utils import make_timezone
@@ -43,6 +44,7 @@ class ClientState:
     week_start: date | None = None
     week_end: date | None = None
     master_ids: list[int] | None = None  # для stage choose_master: список id мастеров
+    available_slots: list[tuple[date, time]] | None = None  # для stage enter_datetime
 
 
 _CLIENT_STATES: Dict[int, ClientState] = {}
@@ -106,6 +108,37 @@ def _parse_week_input(text: str) -> tuple[date, date] | None:
     return None
 
 
+def _format_slots_for_client(slots: list[tuple[date, time]]) -> str:
+    """Группировка по датам: DD/MM  HH:MM, HH:MM."""
+    from collections import defaultdict
+
+    by_date: dict[date, list[time]] = defaultdict(list)
+    for d, t in slots:
+        by_date[d].append(t)
+    for d in by_date:
+        by_date[d].sort()
+    lines = []
+    for d in sorted(by_date.keys()):
+        times = ", ".join(t.strftime("%H:%M") for t in by_date[d])
+        lines.append(f"<b>{d.day:02d}/{d.month:02d}</b>  {times}")
+    return "\n".join(lines)
+
+
+def _parse_client_datetime(text: str) -> tuple[int, int, int, int] | None:
+    """Парсит 'ДД/ММ ЧЧ:ММ' или 'ДД.ММ ЧЧ:ММ'."""
+    parts = (text or "").strip().split()
+    if len(parts) != 2:
+        return None
+    date_str, time_str = parts
+    sep = "/" if "/" in date_str else "."
+    try:
+        day, month = map(int, date_str.split(sep))
+        hour, minute = map(int, time_str.split(":"))
+        return day, month, hour, minute
+    except ValueError:
+        return None
+
+
 @router.message(_in_client_flow)
 async def handle_client_flow(message: Message) -> None:
     user_id = message.from_user.id
@@ -116,6 +149,32 @@ async def handle_client_flow(message: Message) -> None:
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
+        text = (message.text or "").strip()
+        if text == "/назад":
+            if state.stage == "enter_datetime":
+                state.stage = "choose_week"
+                state.available_slots = None
+                set_client_state(user_id, state)
+                await message.answer(f"{ru.CLIENT_CHOOSE_WEEK}\n\n{_format_week_options()}")
+                return
+            if state.stage == "choose_week":
+                state.stage = "choose_service"
+                state.week_start = None
+                state.week_end = None
+                state.available_slots = None
+                set_client_state(user_id, state)
+                services = (
+                    db.query(ServiceORM)
+                    .filter(ServiceORM.master_id == state.master_id, ServiceORM.is_active.is_(True))
+                    .order_by(ServiceORM.id)
+                    .all()
+                )
+                lines = ["Выберите услугу (номер):"]
+                for idx, s in enumerate(services, start=1):
+                    lines.append(f"{idx}. {s.name} — {int(s.price)}, {s.duration_minutes} мин")
+                await message.answer("\n".join(lines))
+                return
+
         if state.stage == "choose_master":
             try:
                 index = int((message.text or "").strip()) - 1
@@ -191,22 +250,82 @@ async def handle_client_flow(message: Message) -> None:
                 return
             state.week_start, state.week_end = week_range
             state.stage = "enter_datetime"
+            # Слоты в выбранной неделе (с учётом записей) показываем сразу
+            master = db.get(MasterProfileORM, state.master_id)
+            if master is None:
+                await message.answer("Мастер не найден. Начните заново.")
+                clear_client_state(user_id)
+                return
+            tz = ZoneInfo(master.timezone)
+            now_local = datetime.now(tz)
+
+            all_slots = (
+                db.query(AvailabilitySlotORM)
+                .filter(AvailabilitySlotORM.master_id == state.master_id)
+                .filter(AvailabilitySlotORM.slot_date >= state.week_start)
+                .filter(AvailabilitySlotORM.slot_date <= state.week_end)
+                .order_by(AvailabilitySlotORM.slot_date, AvailabilitySlotORM.slot_time)
+                .all()
+            )
+            bookings = (
+                db.query(BookingORM)
+                .filter(BookingORM.master_id == state.master_id)
+                .all()
+            )
+            booked_set: set[tuple[date, time]] = set()
+            for b in bookings:
+                local = b.start_at.astimezone(tz)
+                booked_set.add((local.date(), time(local.hour, local.minute)))
+
+            available: list[tuple[date, time]] = []
+            for s in all_slots:
+                if (s.slot_date, s.slot_time) in booked_set:
+                    continue
+                # не показываем прошедшее время
+                dt_local = datetime(
+                    s.slot_date.year, s.slot_date.month, s.slot_date.day, s.slot_time.hour, s.slot_time.minute, tzinfo=tz
+                )
+                if dt_local < now_local:
+                    continue
+                available.append((s.slot_date, s.slot_time))
+
+            if not available:
+                state.available_slots = []
+                set_client_state(user_id, state)
+                await message.answer(ru.CLIENT_NO_SLOTS_WEEK)
+                return
+
+            state.available_slots = available
             set_client_state(user_id, state)
-            await message.answer(ru.CLIENT_ENTER_DATETIME)
+            await message.answer(
+                "Доступные слоты на выбранной неделе:\n\n"
+                + _format_slots_for_client(available)
+                + "\n\n"
+                + ru.CLIENT_ENTER_DATETIME
+            )
             return
 
         if state.stage == "enter_datetime":
-            parts = (message.text or "").strip().split()
-            if len(parts) != 2:
-                await message.answer("Нужны дата и время, например: 25.03 14:00")
-                return
-            date_str, time_str = parts
-            try:
-                day, month = map(int, date_str.split("."))
-                hour, minute = map(int, time_str.split(":"))
-            except ValueError:
-                await message.answer("Формат: ДД.ММ и ЧЧ:ММ. Например: 25.03 14:00")
-                return
+            # Можно выбрать номер слота
+            if (message.text or "").strip().isdigit() and state.available_slots:
+                idx = int((message.text or "").strip()) - 1
+                if 0 <= idx < len(state.available_slots):
+                    chosen_date, chosen_time = state.available_slots[idx]
+                    day, month, hour, minute = (
+                        chosen_date.day,
+                        chosen_date.month,
+                        chosen_time.hour,
+                        chosen_time.minute,
+                    )
+                else:
+                    await message.answer("Нет слота с таким номером. Попробуйте ещё раз.")
+                    return
+            else:
+                parsed_dt = _parse_client_datetime(message.text or "")
+                if parsed_dt is None:
+                    await message.answer("Формат: ДД/ММ ЧЧ:ММ. Например: 25/03 14:00")
+                    return
+                day, month, hour, minute = parsed_dt
 
             if state.week_start is None or state.week_end is None:
                 await message.answer("Ошибка: не выбрана неделя. Начните запись заново.")
@@ -219,8 +338,8 @@ async def handle_client_flow(message: Message) -> None:
             if chosen_date < state.week_start or chosen_date > state.week_end:
                 await message.answer(
                     ru.CLIENT_DATE_NOT_IN_WEEK.format(
-                        state.week_start.strftime("%d.%m"),
-                        state.week_end.strftime("%d.%m"),
+                        state.week_start.strftime("%d/%m"),
+                        state.week_end.strftime("%d/%m"),
                     )
                 )
                 return
@@ -283,8 +402,8 @@ async def handle_client_flow(message: Message) -> None:
                 master_id=master.id,
                 client_id=client.id,
                 service_id=service.id,
-                start_at=start_local.astimezone(datetime.timezone.utc),
-                end_at=end_local.astimezone(datetime.timezone.utc),
+                start_at=start_local.astimezone(timezone.utc),
+                end_at=end_local.astimezone(timezone.utc),
                 status="CONFIRMED",
             )
             db.add(booking)
@@ -294,13 +413,14 @@ async def handle_client_flow(message: Message) -> None:
                 "Запись создана!\n\n"
                 f"Мастер: {master.display_name}\n"
                 f"Услуга: {service.name}\n"
-                f"Дата и время: {start_local.strftime('%d.%m %H:%M')}\n\n"
+                f"Дата и время: {start_local.strftime('%d/%m %H:%M')}\n\n"
                 f"{ru.CLIENT_ANOTHER_BOOKING}"
             )
             state.stage = "another_booking"
             state.chosen_service_id = None
             state.week_start = None
             state.week_end = None
+            state.available_slots = None
             set_client_state(user_id, state)
             return
 

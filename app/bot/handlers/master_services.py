@@ -10,6 +10,7 @@ from app.db.models import MasterProfileORM, ServiceORM
 
 router = Router()
 
+_SERVICES_CONTEXT: set[int] = set()  # user_id -> last opened /services
 
 def _services_list_text(services: list) -> str:
     lines = ["<b>Ваши услуги:</b>"]
@@ -25,6 +26,7 @@ def _services_list_text(services: list) -> str:
 
 @router.message(Command("services"))
 async def cmd_services(message: Message) -> None:
+    _SERVICES_CONTEXT.add(message.from_user.id)
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
@@ -59,7 +61,11 @@ async def cmd_services(message: Message) -> None:
         db.close()
 
 
-@router.message(F.text, lambda m: (m.text or "").strip().upper().startswith("УДАЛИТЬ"))
+@router.message(
+    F.text,
+    lambda m: m.from_user.id in _SERVICES_CONTEXT,
+    lambda m: (m.text or "").strip().upper().startswith("УДАЛИТЬ"),
+)
 async def remove_service_by_number(message: Message) -> None:
     text = (message.text or "").strip()
     rest = text[7:].strip()  # после "УДАЛИТЬ" (7 символов)

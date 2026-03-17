@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, time
+from datetime import date, datetime, time
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -13,7 +13,6 @@ from app.db.base import get_session_maker
 from app.db.models import AvailabilitySlotORM, BookingORM, MasterProfileORM
 
 router = Router()
-
 
 def _format_schedule_with_bookings(
     slots: list[tuple[date, time]],
@@ -51,9 +50,14 @@ async def cmd_schedule(message: Message) -> None:
             await message.answer("Сначала пройдите онбординг через /start.")
             return
 
+        tz = ZoneInfo(master.timezone)
+        today_local = datetime.now(tz).date()
+        end_of_year = date(today_local.year, 12, 31)
         slots = (
             db.query(AvailabilitySlotORM)
             .filter(AvailabilitySlotORM.master_id == master.id)
+            .filter(AvailabilitySlotORM.slot_date >= today_local)
+            .filter(AvailabilitySlotORM.slot_date <= end_of_year)
             .order_by(AvailabilitySlotORM.slot_date, AvailabilitySlotORM.slot_time)
             .all()
         )
@@ -69,7 +73,6 @@ async def cmd_schedule(message: Message) -> None:
             return
 
         # Занятые слоты из записей (дата+время в таймзоне мастера)
-        tz = ZoneInfo(master.timezone)
         bookings = (
             db.query(BookingORM)
             .filter(BookingORM.master_id == master.id)
@@ -82,21 +85,104 @@ async def cmd_schedule(message: Message) -> None:
 
         slot_list = [(s.slot_date, s.slot_time) for s in slots]
         formatted = _format_schedule_with_bookings(slot_list, booked_set)
-        await message.answer(formatted + "\n\nДобавить слоты: отправьте строку вида 20/02 в 10:00, 12:00")
+        await message.answer(
+            formatted
+            + "\n\n"
+            "Добавить слоты: отправьте строки вида:\n"
+            "<b>23/03 в 10:00, 12:00</b>\n\n"
+            "Удалить слоты: отправьте:\n"
+            "<b>УДАЛИТЬ</b>\n"
+            "23/03 в 10:00, 12:00\n"
+            "24/03 16:00"
+        )
     finally:
         db.close()
 
 
 @router.message(
     F.text,
-    lambda m: " в " in (m.text or "") and len(parse_schedule_lines((m.text or "").strip())) > 0,
+    lambda m: (m.text or "").strip().upper().startswith("УДАЛИТЬ"),
+)
+async def delete_slots_by_text(message: Message) -> None:
+    text = (message.text or "").strip()
+    payload = text[7:].strip()
+    # Если после "УДАЛИТЬ" ничего нет — берём строки после первой строки
+    if "\n" in text:
+        payload = "\n".join(text.splitlines()[1:]).strip()
+    if not payload:
+        await message.answer(
+            "Отправьте так:\n"
+            "<b>УДАЛИТЬ</b>\n"
+            "23/03 в 10:00, 12:00\n"
+            "24/03 16:00"
+        )
+        return
+
+    db_session_maker = get_session_maker()
+    db = db_session_maker()
+    try:
+        master = (
+            db.query(MasterProfileORM)
+            .filter(MasterProfileORM.user_id == message.from_user.id)
+            .one_or_none()
+        )
+        if master is None:
+            await message.answer("Сначала пройдите онбординг через /start.")
+            return
+
+        tz = ZoneInfo(master.timezone)
+        today_local = datetime.now(tz).date()
+        parsed = parse_schedule_lines(payload, today=today_local, skip_past=False)
+        if not parsed:
+            await message.answer("Не смог разобрать строки для удаления. Пример: 23/03 в 10:00, 12:00")
+            return
+
+        deleted = 0
+        for slot_date, slot_time in parsed:
+            deleted += (
+                db.query(AvailabilitySlotORM)
+                .filter(
+                    AvailabilitySlotORM.master_id == master.id,
+                    AvailabilitySlotORM.slot_date == slot_date,
+                    AvailabilitySlotORM.slot_time == slot_time,
+                )
+                .delete()
+            )
+        db.commit()
+        await message.answer(f"Удалено слотов: {deleted}.\nОбновить: /schedule")
+    finally:
+        db.close()
+
+
+@router.message(
+    F.text,
+    lambda m: (
+        (" в " in (m.text or "") or "/" in (m.text or ""))
+        and len(parse_schedule_lines((m.text or "").strip(), skip_past=False)) > 0
+    ),
 )
 async def add_slots_from_text(message: Message) -> None:
     text = (message.text or "").strip()
-    if not text or " в " not in text:
+    if not text:
         return
 
-    parsed = parse_schedule_lines(text)
+    # добавляем только слоты >= сегодня в таймзоне мастера
+    db_session_maker = get_session_maker()
+    db = db_session_maker()
+    try:
+        master = (
+            db.query(MasterProfileORM)
+            .filter(MasterProfileORM.user_id == message.from_user.id)
+            .one_or_none()
+        )
+        if master is None:
+            return
+        tz = ZoneInfo(master.timezone)
+        today_local = datetime.now(tz).date()
+    finally:
+        db.close()
+
+    parsed = parse_schedule_lines(text, today=today_local, skip_past=True)
     if not parsed:
         return
 

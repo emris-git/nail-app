@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -22,6 +25,9 @@ router = Router()
 
 # Выбор роли при /start без payload
 _ROLE_CHOICE_PENDING: set[int] = set()
+
+# Ожидание имени мастера (после выбора роли "Мастер")
+_EXPECT_MASTER_NAME: set[int] = set()
 
 # Онбординг мастера: после имени — услуги, затем расписание
 _MASTER_ONBOARDING: dict[int, tuple[int, str]] = {}  # user_id -> (master_id, "services" | "schedule")
@@ -117,6 +123,7 @@ async def handle_role_callback(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
     _ROLE_CHOICE_PENDING.discard(user_id)
     if callback.data == "role:master":
+        _EXPECT_MASTER_NAME.add(user_id)
         await callback.message.answer(ru.MASTER_ENTER_NAME)
         return
     # role:client
@@ -162,6 +169,7 @@ async def handle_role_choice(message: Message) -> None:
     text = (message.text or "").strip().lower()
 
     if text in ("мастер", "1", "master"):
+        _EXPECT_MASTER_NAME.add(user_id)
         await message.answer(ru.MASTER_ENTER_NAME)
         return
 
@@ -275,7 +283,10 @@ async def master_onboarding_step(message: Message) -> None:
             return
 
         # step == "schedule"
-        parsed = parse_schedule_lines(text)
+        master = db.query(MasterProfileORM).filter(MasterProfileORM.id == master_id).one_or_none()
+        master_tz = master.timezone if master is not None else get_settings().default_timezone
+        today_local = datetime.now(ZoneInfo(master_tz)).date()
+        parsed = parse_schedule_lines(text, today=today_local, skip_past=True)
         if not parsed:
             await message.answer(
                 "Формат: Д/ММ в ЧЧ:ММ или Д/ММ в ЧЧ:ММ, ЧЧ:ММ, ...\n"
@@ -310,18 +321,27 @@ async def master_onboarding_step(message: Message) -> None:
         db.close()
 
 
-@router.message(F.text & ~F.via_bot)
+@router.message(F.text & ~F.via_bot, lambda m: m.from_user.id in _EXPECT_MASTER_NAME)
 async def master_enter_name(message: Message) -> None:
     """
     Первый текст после /start без payload — имя мастера; затем запускаем настройку услуг и расписания.
     """
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+    # Команды не считаем именем: оставляем ожидание имени активным
+    if text.startswith("/"):
+        await message.answer(ru.MASTER_ENTER_NAME)
+        return
+
+    _EXPECT_MASTER_NAME.discard(user_id)
+
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
         service = MasterOnboardingService(db=db, price_list_parser=MockPriceListParser())
         result = await service.create_master_profile(
             tg_user_id=message.from_user.id,
-            display_name=message.text.strip(),
+            display_name=text,
             timezone=get_settings().default_timezone,
         )
     finally:

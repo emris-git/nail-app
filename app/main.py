@@ -4,15 +4,10 @@ import asyncio
 import sys
 from typing import Optional
 
-from fastapi import FastAPI
 from uvicorn import Config, Server
 
-from app.api.main import create_app
 from app.bot.bot_factory import create_bot_and_dispatcher
 from app.config import configure_logging, get_settings
-
-
-app: FastAPI = create_app()
 
 
 async def run_polling() -> None:
@@ -31,7 +26,7 @@ async def run_polling() -> None:
 def run_uvicorn() -> None:
     settings = get_settings()
     port = settings.port
-    config = Config(app="app.main:app", host="0.0.0.0", port=port, reload=False)
+    config = Config(app="app.asgi:app", host="0.0.0.0", port=port, reload=False)
     server = Server(config)
     asyncio.run(server.serve())
 

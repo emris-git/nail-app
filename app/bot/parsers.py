@@ -50,21 +50,36 @@ def parse_services_text(text: str) -> list[Tuple[str, float, int]]:
     return result
 
 
-def parse_schedule_lines(text: str, default_year: int | None = None) -> list[Tuple[date, time]]:
+def parse_schedule_lines(
+    text: str,
+    *,
+    default_year: int | None = None,
+    today: date | None = None,
+    skip_past: bool = True,
+) -> list[Tuple[date, time]]:
     """
     Парсит расписание в формате:
     9/02 в 10:00
     20/02 в 10:00, 12:00, 16:00
-    Возвращает список (slot_date, slot_time). Год: default_year или текущий; если дата в прошлом — следующий год.
+    Также понимает вариант без «в»:
+    20/02 10:00, 12:00, 16:00
+
+    Возвращает список (slot_date, slot_time). Год: default_year или текущий.
     """
-    today = date.today()
-    year = default_year or today.year
+    today_val = today or date.today()
+    year = default_year or today_val.year
     result = []
     for line in text.strip().splitlines():
         line = line.strip()
-        if not line or " в " not in line:
+        if not line:
             continue
-        date_part, rest = line.split(" в ", 1)
+        if " в " in line:
+            date_part, rest = line.split(" в ", 1)
+        else:
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            date_part, rest = parts[0], parts[1]
         date_part = date_part.strip()
         times_part = rest.strip()
         try:
@@ -75,8 +90,8 @@ def parse_schedule_lines(text: str, default_year: int | None = None) -> list[Tup
             slot_date = date(year, m, d)
         except ValueError:
             continue
-        if slot_date < today:
-            slot_date = date(year + 1, m, d)
+        if skip_past and slot_date < today_val:
+            continue
         for t in times_part.split(","):
             t = t.strip()
             if not t:
