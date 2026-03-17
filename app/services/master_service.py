@@ -33,6 +33,16 @@ class MasterOnboardingService:
     ) -> MasterOnboardingResult:
         user = self.ensure_master_user(tg_user_id, None)
 
+        profile = (
+            self._db.query(orm.MasterProfileORM).filter_by(user_id=user.id).one_or_none()
+        )
+        if profile is not None:
+            profile.display_name = display_name
+            profile.timezone = timezone
+            self._db.commit()
+            self._db.refresh(profile)
+            return MasterOnboardingResult(master_id=profile.id, slug=profile.slug)
+
         slug = f"m{tg_user_id}"
         profile = orm.MasterProfileORM(
             user_id=user.id,
