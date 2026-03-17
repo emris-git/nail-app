@@ -1,26 +1,18 @@
 from __future__ import annotations
 
-from datetime import time
-
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.bot.parsers import format_schedule_slots, parse_schedule_lines
 from app.db.base import get_session_maker
-from app.db.models import MasterProfileORM, WorkingWindowORM
+from app.db.models import AvailabilitySlotORM, MasterProfileORM
 
 router = Router()
 
 
 @router.message(Command("schedule"))
 async def cmd_schedule(message: Message) -> None:
-    """
-    Простое расписание:
-    - /schedule — показать текущие окна.
-    - Для добавления окна отправьте:
-      weekday; HH:MM; HH:MM
-      Например: 1; 10:00; 18:00 (1 = Пн).
-    """
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
@@ -33,32 +25,39 @@ async def cmd_schedule(message: Message) -> None:
             await message.answer("Сначала пройдите онбординг через /start.")
             return
 
-        windows = (
-            db.query(WorkingWindowORM)
-            .filter(WorkingWindowORM.master_id == master.id)
-            .order_by(WorkingWindowORM.weekday, WorkingWindowORM.start_time)
+        slots = (
+            db.query(AvailabilitySlotORM)
+            .filter(AvailabilitySlotORM.master_id == master.id)
+            .order_by(AvailabilitySlotORM.slot_date, AvailabilitySlotORM.slot_time)
             .all()
         )
-        if not windows:
+        if not slots:
             await message.answer(
                 "Расписание пока не настроено.\n\n"
-                "Чтобы добавить окно, отправьте сообщение вида:\n"
-                "<b>weekday; HH:MM; HH:MM</b>\n"
+                "Формат — дата и время слотов (можно несколько строк):\n"
+                "<b>Д/ММ в ЧЧ:ММ</b> или <b>Д/ММ в ЧЧ:ММ, ЧЧ:ММ, ...</b>\n"
                 "Например:\n"
-                "1; 10:00; 18:00  (1 = Пн, 2 = Вт и т.д.)"
+                "9/02 в 10:00\n"
+                "20/02 в 10:00, 12:00, 16:00"
             )
             return
 
-        lines = ["Текущие рабочие окна:"]
-        for w in windows:
-            lines.append(f"- День {w.weekday}: {w.start_time.strftime('%H:%M')}–{w.end_time.strftime('%H:%M')}")
-        await message.answer("\n".join(lines))
+        formatted = format_schedule_slots([(s.slot_date, s.slot_time) for s in slots])
+        await message.answer("Ваши слоты:\n\n" + formatted)
     finally:
         db.close()
 
 
 @router.message()
-async def add_window_from_text(message: Message) -> None:
+async def add_slots_from_text(message: Message) -> None:
+    text = (message.text or "").strip()
+    if not text or " в " not in text:
+        return
+
+    parsed = parse_schedule_lines(text)
+    if not parsed:
+        return
+
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
@@ -70,35 +69,30 @@ async def add_window_from_text(message: Message) -> None:
         if master is None:
             return
 
-        parts = [p.strip() for p in message.text.split(";")]
-        if len(parts) != 3:
-            return
-
-        weekday_str, start_str, end_str = parts
-        try:
-            weekday = int(weekday_str)
-            start_h, start_m = map(int, start_str.split(":"))
-            end_h, end_m = map(int, end_str.split(":"))
-        except ValueError:
-            return
-
-        start_t = time(start_h, start_m)
-        end_t = time(end_h, end_m)
-        if end_t <= start_t:
-            return
-
-        window = WorkingWindowORM(
-            master_id=master.id,
-            weekday=weekday,
-            start_time=start_t,
-            end_time=end_t,
-        )
-        db.add(window)
+        added = 0
+        for slot_date, slot_time in parsed:
+            exists = (
+                db.query(AvailabilitySlotORM)
+                .filter(
+                    AvailabilitySlotORM.master_id == master.id,
+                    AvailabilitySlotORM.slot_date == slot_date,
+                    AvailabilitySlotORM.slot_time == slot_time,
+                )
+                .first()
+            )
+            if not exists:
+                db.add(
+                    AvailabilitySlotORM(
+                        master_id=master.id,
+                        slot_date=slot_date,
+                        slot_time=slot_time,
+                    )
+                )
+                added += 1
         db.commit()
 
         await message.answer(
-            f"Добавлено окно: день {weekday}, {start_t.strftime('%H:%M')}–{end_t.strftime('%H:%M')}.\n"
-            "Посмотреть расписание: /schedule"
+            f"Добавлено слотов: {added}.\nПосмотреть: /schedule"
         )
     finally:
         db.close()

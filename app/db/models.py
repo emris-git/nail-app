@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
+    Date,
     Column,
     DateTime,
     Enum,
@@ -67,6 +68,21 @@ class WorkingWindowORM(Base):
     weekday = Column(Integer, nullable=False)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
+
+
+class AvailabilitySlotORM(Base):
+    """Слоты по конкретным датам и времени (формат: 20/02 в 10:00, 12:00, 16:00)."""
+
+    __tablename__ = "availability_slots"
+
+    id = Column(Integer, primary_key=True)
+    master_id = Column(Integer, ForeignKey("master_profiles.id"), nullable=False)
+    slot_date = Column(Date, nullable=False)
+    slot_time = Column(Time, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("master_id", "slot_date", "slot_time", name="uq_availability_slot"),
+    )
 
 
 class DailyBookingLimitORM(Base):

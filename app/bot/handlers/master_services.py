@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.bot.parsers import parse_services_text
 from app.db.base import get_session_maker
 from app.db.models import MasterProfileORM, ServiceORM
 
@@ -34,16 +35,16 @@ async def cmd_services(message: Message) -> None:
         if not services:
             await message.answer(
                 "У вас пока нет услуг.\n"
-                "Отправьте сообщение вида:\n"
-                "<b>услуга; цена; длительность_в_минутах</b>\n"
-                "Например:\n"
-                "Маникюр; 1500; 60"
+                "Формат: <b>название, цена, длительность_мин</b> (разделитель — запятая).\n"
+                "Можно с валютой и несколько строк:\n"
+                "Маникюр, 200 MYR, 60\n"
+                "Педикюр, 180 MYR, 60"
             )
             return
 
         lines = ["Ваши активные услуги:"]
         for s in services:
-            lines.append(f"- {s.name}: {int(s.price)} ₽, {s.duration_minutes} мин")
+            lines.append(f"- {s.name}: {int(s.price)}, {s.duration_minutes} мин")
         await message.answer("\n".join(lines))
     finally:
         db.close()
@@ -51,6 +52,13 @@ async def cmd_services(message: Message) -> None:
 
 @router.message()
 async def add_service_from_text(message: Message) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        return
+    parsed = parse_services_text(text)
+    if not parsed:
+        return
+
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
@@ -62,31 +70,21 @@ async def add_service_from_text(message: Message) -> None:
         if master is None:
             return
 
-        parts = [p.strip() for p in message.text.split(";")]
-        if len(parts) != 3:
-            return
-
-        name, price_str, dur_str = parts
-        try:
-            price = float(price_str.replace(",", "."))
-            duration = int(dur_str)
-        except ValueError:
-            return
-
-        service = ServiceORM(
-            master_id=master.id,
-            name=name,
-            price=price,
-            duration_minutes=duration,
-            is_active=True,
-        )
-        db.add(service)
+        added = []
+        for name, price, duration in parsed:
+            service = ServiceORM(
+                master_id=master.id,
+                name=name,
+                price=price,
+                duration_minutes=duration,
+                is_active=True,
+            )
+            db.add(service)
+            added.append(f"{name} — {int(price)}, {duration} мин")
         db.commit()
 
-        await message.answer(
-            f"Услуга добавлена:\n{name} — {int(price)} ₽, {duration} мин.\n"
-            "Посмотреть список: /services"
-        )
+        msg = "Добавлено:\n" + "\n".join(added) + "\n\nСписок: /services"
+        await message.answer(msg)
     finally:
         db.close()
 

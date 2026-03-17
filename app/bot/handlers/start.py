@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import time
-
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 
+from app.bot.parsers import parse_schedule_lines, parse_services_text
 from app.bot.texts import ru
 from app.config import get_settings
 from app.db.base import get_session_maker
-from app.db.models import MasterProfileORM, ServiceORM, WorkingWindowORM
+from app.db.models import AvailabilitySlotORM, MasterProfileORM, ServiceORM
 from app.adapters.llm.mock import MockPriceListParser
 from app.services.master_service import MasterOnboardingService
 from .client_booking import ClientState, set_client_state
@@ -117,73 +116,69 @@ async def master_onboarding_step(message: Message) -> None:
                 "Ваша личная ссылка для клиентов:\n"
                 f"{link}"
             )
+            await message.answer(ru.MASTER_COMMANDS)
         return
 
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
         if step == "services":
-            parts = [p.strip() for p in text.split(";")]
-            if len(parts) != 3:
+            parsed = parse_services_text(text)
+            if not parsed:
                 await message.answer(
-                    "Нужен формат: название; цена; длительность_мин\n"
-                    "Например: Маникюр; 1500; 60"
+                    "Формат: название, цена, длительность_мин (через запятую).\n"
+                    "Можно с валютой и несколько строк. Например:\n"
+                    "Маникюр, 200 MYR, 60"
                 )
                 return
-            name, price_str, dur_str = parts
-            try:
-                price = float(price_str.replace(",", "."))
-                duration = int(dur_str)
-            except ValueError:
-                await message.answer("Цена — число, длительность — целое число в минутах.")
-                return
-            service = ServiceORM(
-                master_id=master_id,
-                name=name,
-                price=price,
-                duration_minutes=duration,
-                is_active=True,
-            )
-            db.add(service)
+            added = []
+            for name, price, duration in parsed:
+                service = ServiceORM(
+                    master_id=master_id,
+                    name=name,
+                    price=price,
+                    duration_minutes=duration,
+                    is_active=True,
+                )
+                db.add(service)
+                added.append(f"{name} — {int(price)}, {duration} мин")
             db.commit()
             await message.answer(
-                f"Добавлено: {name} — {int(price)} ₽, {duration} мин.\n"
-                "Ещё услугу или /готово"
+                "Добавлено:\n" + "\n".join(added) + "\n\nЕщё или /готово"
             )
             return
 
         # step == "schedule"
-        parts = [p.strip() for p in text.split(";")]
-        if len(parts) != 3:
+        parsed = parse_schedule_lines(text)
+        if not parsed:
             await message.answer(
-                "Нужен формат: день_недели; HH:MM; HH:MM\n"
-                "Например: 1; 10:00; 18:00 (1=Пн)"
+                "Формат: Д/ММ в ЧЧ:ММ или Д/ММ в ЧЧ:ММ, ЧЧ:ММ, ...\n"
+                "Например: 20/02 в 10:00, 12:00, 16:00"
             )
             return
-        weekday_str, start_str, end_str = parts
-        try:
-            weekday = int(weekday_str)
-            start_h, start_m = map(int, start_str.split(":"))
-            end_h, end_m = map(int, end_str.split(":"))
-        except ValueError:
-            await message.answer("День — число 1–7, время в формате HH:MM.")
-            return
-        start_t = time(start_h, start_m)
-        end_t = time(end_h, end_m)
-        if end_t <= start_t:
-            await message.answer("Время окончания должно быть позже начала.")
-            return
-        window = WorkingWindowORM(
-            master_id=master_id,
-            weekday=weekday,
-            start_time=start_t,
-            end_time=end_t,
-        )
-        db.add(window)
+        added = 0
+        for slot_date, slot_time in parsed:
+            exists = (
+                db.query(AvailabilitySlotORM)
+                .filter(
+                    AvailabilitySlotORM.master_id == master_id,
+                    AvailabilitySlotORM.slot_date == slot_date,
+                    AvailabilitySlotORM.slot_time == slot_time,
+                )
+                .first()
+            )
+            if not exists:
+                db.add(
+                    AvailabilitySlotORM(
+                        master_id=master_id,
+                        slot_date=slot_date,
+                        slot_time=slot_time,
+                    )
+                )
+                added += 1
         db.commit()
         await message.answer(
-            f"Добавлено окно: день {weekday}, {start_t.strftime('%H:%M')}–{end_t.strftime('%H:%M')}.\n"
-            "Ещё окно или /готово"
+            f"Добавлено слотов: {added}.\nЕщё или /готово"
         )
     finally:
         db.close()
