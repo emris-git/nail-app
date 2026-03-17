@@ -28,25 +28,77 @@ def parse_services_text(text: str) -> list[Tuple[str, float, int]]:
     Строка: название, цена (можно с валютой), длительность_мин.
     Возвращает список (name, price, duration_minutes) или пустой при ошибке.
     """
-    result = []
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 3:
-            continue
-        name, price_str, dur_str = parts[0], parts[1], parts[2]
-        price = parse_price(price_str)
+    def _parse_line(line: str) -> tuple[str, float, int] | None:
+        """
+        Accepts common real-world formats:
+        - "Маникюр, 200 MYR, 60"
+        - "Маникюр - 200 MYR - 60"
+        - "Маникюр — 2000 — 60"
+        - "Маникюр 2000 60"
+        - "Маникюр 2000р 60мин"
+        """
+        raw = line.strip()
+        if not raw:
+            return None
+
+        # Normalize separators to comma when it looks like a 3-field input.
+        normalized = re.sub(r"\s*[—–-]\s*", ",", raw)
+        normalized = re.sub(r"\s*;\s*", ",", normalized)
+        parts = [p.strip() for p in normalized.split(",") if p.strip()]
+
+        name: str | None = None
+        price: float | None = None
+        duration: int | None = None
+
+        if len(parts) >= 3:
+            name = parts[0]
+            price = parse_price(parts[1])
+            dur_match = re.search(r"\d+", parts[2])
+            if dur_match:
+                duration = int(dur_match.group(0))
+        else:
+            # Space-separated fallback: treat last int as duration, previous number-ish as price
+            tokens = raw.split()
+            if len(tokens) < 3:
+                return None
+
+            # duration: last integer found scanning from end
+            dur_idx = None
+            for i in range(len(tokens) - 1, -1, -1):
+                m = re.fullmatch(r"\d{1,4}", re.sub(r"\D", "", tokens[i]))
+                if m:
+                    dur_idx = i
+                    duration = int(re.sub(r"\D", "", tokens[i]))
+                    break
+            if dur_idx is None or duration is None:
+                return None
+
+            # price: scan left from duration for first token containing a number
+            price_idx = None
+            for j in range(dur_idx - 1, -1, -1):
+                if re.search(r"\d", tokens[j]):
+                    price_idx = j
+                    price = parse_price(tokens[j])
+                    break
+            if price_idx is None or price is None:
+                return None
+
+            name = " ".join(tokens[:price_idx]).strip()
+
+        if not name:
+            return None
         if price is None or price <= 0:
-            continue
-        try:
-            duration = int(dur_str.strip())
-            if duration <= 0:
-                continue
-        except ValueError:
-            continue
-        result.append((name, price, duration))
+            return None
+        if duration is None or duration <= 0:
+            return None
+
+        return name, price, duration
+
+    result: list[Tuple[str, float, int]] = []
+    for line in text.strip().splitlines():
+        parsed = _parse_line(line)
+        if parsed is not None:
+            result.append(parsed)
     return result
 
 
