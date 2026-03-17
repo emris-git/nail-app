@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,9 +13,26 @@ from app.bot.webhook import setup_webhook_routes
 logger = logging.getLogger(__name__)
 
 
+def _run_migrations() -> None:
+    """Запуск Alembic миграций (sync)."""
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("script_location", "alembic")
+    command.upgrade(alembic_cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """При старте приложения регистрируем webhook в Telegram, если задан WEBHOOK_BASE_URL."""
+    """При старте: миграции БД, затем регистрация webhook в Telegram."""
+    try:
+        await asyncio.to_thread(_run_migrations)
+        logger.info("Database migrations applied")
+    except Exception as e:
+        logger.exception("Database migration failed: %s", e)
+        raise
+
     settings = get_settings()
     bot = app.state.bot
     if settings.webhook_base_url is not None:
