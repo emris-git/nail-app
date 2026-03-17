@@ -3,8 +3,17 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _normalize_database_url(url: str) -> str:
+    """Railway и др. отдают postgres://, для SQLAlchemy+psycopg2 нужен postgresql+psycopg2://."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg2://" + url[len("postgres://") :]
+    if url.startswith("postgresql://") and "psycopg2" not in url:
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
 
 
 class Settings(BaseSettings):
@@ -13,6 +22,11 @@ class Settings(BaseSettings):
     # Core
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     database_url: str = Field(..., alias="DATABASE_URL")
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_db_url(cls, v: str) -> str:
+        return _normalize_database_url(v) if isinstance(v, str) else v
     webhook_base_url: Optional[AnyHttpUrl] = Field(None, alias="WEBHOOK_BASE_URL")
     bot_webhook_secret: str = Field("secret", alias="BOT_WEBHOOK_SECRET")
     default_timezone: str = Field("Europe/Moscow", alias="DEFAULT_TIMEZONE")
