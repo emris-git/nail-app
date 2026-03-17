@@ -11,7 +11,7 @@ from app.db.models import MasterProfileORM
 router = Router()
 
 
-@router.message(Command("share"))
+@router.message(Command("link"))
 async def cmd_share(message: Message) -> None:
     db_session_maker = get_session_maker()
     db = db_session_maker()
@@ -43,4 +43,10 @@ async def cmd_share(message: Message) -> None:
         await message.answer(text)
     finally:
         db.close()
+
+
+# Backward-compatible alias (not advertised)
+@router.message(Command("share"))
+async def cmd_share_alias(message: Message) -> None:
+    await cmd_share(message)
 

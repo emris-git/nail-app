@@ -5,7 +5,13 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 from app.bot.parsers import parse_schedule_lines, parse_services_text
 from app.bot.texts import ru
@@ -72,6 +78,17 @@ async def _answer_client_redirect(message: Message, payload: str = "") -> None:
     )
 
 
+def _master_commands_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        keyboard=[
+            [KeyboardButton(text="/services"), KeyboardButton(text="/schedule")],
+            [KeyboardButton(text="/bookings"), KeyboardButton(text="/clients")],
+            [KeyboardButton(text="/link")],
+        ],
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     parts = message.text.split(maxsplit=1)
@@ -97,11 +114,11 @@ async def cmd_start(message: Message) -> None:
         db.close()
 
     if master is not None:
-        await message.answer(ru.MASTER_COMMANDS)
+        await message.answer(ru.MASTER_COMMANDS, reply_markup=_master_commands_keyboard())
         return
 
     _EXPECT_MASTER_NAME.add(user_id)
-    await message.answer(ru.MASTER_ENTER_NAME)
+    await message.answer(ru.MASTER_ENTER_NAME, reply_markup=_master_commands_keyboard())
 
 
 @router.message(
@@ -151,7 +168,7 @@ async def master_onboarding_step(message: Message) -> None:
                 "Ваша личная ссылка для клиентов:\n"
                 f"{link}"
             )
-            await message.answer(ru.MASTER_COMMANDS)
+            await message.answer(ru.MASTER_COMMANDS, reply_markup=_master_commands_keyboard())
         return
 
     db_session_maker = get_session_maker()
