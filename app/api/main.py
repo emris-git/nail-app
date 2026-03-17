@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.config import configure_logging, get_settings
 from app.bot.bot_factory import create_bot_and_dispatcher
 from app.bot.webhook import setup_webhook_routes
 
 logger = logging.getLogger(__name__)
+
+
+def _log_exception(exc: BaseException) -> None:
+    """Печать в stderr, чтобы точно попало в логи Railway."""
+    print(f"[APP ERROR] {exc!r}", file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+    logger.exception("%s", exc)
 
 
 def _run_migrations() -> None:
@@ -58,6 +69,11 @@ def create_app() -> FastAPI:
     app.state.dispatcher = dispatcher
 
     setup_webhook_routes(app, bot, dispatcher, settings)
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        _log_exception(exc)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:
