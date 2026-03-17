@@ -107,6 +107,18 @@ class ClientProfileORM(Base):
     last_visit_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class ClientSavedMasterORM(Base):
+    """Мастера, добавленные клиенту (по ссылке); для выбора при /start → клиент."""
+
+    __tablename__ = "client_saved_masters"
+
+    id = Column(Integer, primary_key=True)
+    tg_user_id = Column(Integer, nullable=False)
+    master_id = Column(Integer, ForeignKey("master_profiles.id"), nullable=False)
+
+    __table_args__ = (UniqueConstraint("tg_user_id", "master_id", name="uq_client_saved_master"),)
+
+
 class BookingORM(Base):
     __tablename__ = "bookings"
 

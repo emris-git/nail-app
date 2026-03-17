@@ -42,6 +42,7 @@ class ClientState:
     chosen_service_id: int | None = None
     week_start: date | None = None
     week_end: date | None = None
+    master_ids: list[int] | None = None  # для stage choose_master: список id мастеров
 
 
 _CLIENT_STATES: Dict[int, ClientState] = {}
@@ -115,6 +116,40 @@ async def handle_client_flow(message: Message) -> None:
     db_session_maker = get_session_maker()
     db = db_session_maker()
     try:
+        if state.stage == "choose_master":
+            try:
+                index = int((message.text or "").strip()) - 1
+            except ValueError:
+                await message.answer("Отправьте номер мастера из списка.")
+                return
+            if not state.master_ids or index < 0 or index >= len(state.master_ids):
+                await message.answer("Нет мастера с таким номером. Отправьте /start и выберите клиент.")
+                return
+            master_id = state.master_ids[index]
+            master = db.get(MasterProfileORM, master_id)
+            if master is None:
+                await message.answer("Мастер не найден. Отправьте /start.")
+                clear_client_state(user_id)
+                return
+            services = (
+                db.query(ServiceORM)
+                .filter(ServiceORM.master_id == master_id, ServiceORM.is_active.is_(True))
+                .order_by(ServiceORM.id)
+                .all()
+            )
+            if not services:
+                await message.answer("У этого мастера пока нет услуг для записи.")
+                return
+            state.master_id = master_id
+            state.stage = "choose_service"
+            state.master_ids = None
+            set_client_state(user_id, state)
+            lines = [f"Запись к мастеру {master.display_name}", "", "Выберите услугу (номер):"]
+            for idx, s in enumerate(services, start=1):
+                lines.append(f"{idx}. {s.name} — {int(s.price)}, {s.duration_minutes} мин")
+            await message.answer("\n".join(lines))
+            return
+
         if state.stage == "choose_service":
             try:
                 index = int(message.text.strip()) - 1

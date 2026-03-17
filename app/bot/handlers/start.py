@@ -2,18 +2,26 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.parsers import parse_schedule_lines, parse_services_text
 from app.bot.texts import ru
 from app.config import get_settings
 from app.db.base import get_session_maker
-from app.db.models import AvailabilitySlotORM, MasterProfileORM, ServiceORM
+from app.db.models import (
+    AvailabilitySlotORM,
+    ClientSavedMasterORM,
+    MasterProfileORM,
+    ServiceORM,
+)
 from app.adapters.llm.mock import MockPriceListParser
 from app.services.master_service import MasterOnboardingService
 from .client_booking import ClientState, set_client_state
 
 router = Router()
+
+# Выбор роли при /start без payload
+_ROLE_CHOICE_PENDING: set[int] = set()
 
 # Онбординг мастера: после имени — услуги, затем расписание
 _MASTER_ONBOARDING: dict[int, tuple[int, str]] = {}  # user_id -> (master_id, "services" | "schedule")
@@ -35,6 +43,7 @@ def _clear_master_onboarding(user_id: int) -> None:
 async def cmd_start(message: Message) -> None:
     parts = message.text.split(maxsplit=1)
     payload = parts[1] if len(parts) > 1 else ""
+    user_id = message.from_user.id
 
     if payload.startswith("master_"):
         slug = payload.removeprefix("master_")
@@ -50,6 +59,21 @@ async def cmd_start(message: Message) -> None:
                 await message.answer("Мастер с такой ссылкой не найден.")
                 return
 
+            # Добавляем мастера в список клиента (по ссылке)
+            saved = (
+                db.query(ClientSavedMasterORM)
+                .filter(
+                    ClientSavedMasterORM.tg_user_id == user_id,
+                    ClientSavedMasterORM.master_id == master.id,
+                )
+                .first()
+            )
+            if not saved:
+                db.add(
+                    ClientSavedMasterORM(tg_user_id=user_id, master_id=master.id)
+                )
+                db.commit()
+
             services = (
                 db.query(ServiceORM)
                 .filter(ServiceORM.master_id == master.id, ServiceORM.is_active.is_(True))
@@ -63,13 +87,13 @@ async def cmd_start(message: Message) -> None:
             lines = [
                 f"Запись к мастеру {master.display_name}",
                 "",
-                "Выберите услугу, отправив её номер:",
+                "Выберите услугу (номер):",
             ]
             for idx, s in enumerate(services, start=1):
-                lines.append(f"{idx}. {s.name} — {int(s.price)} ₽, {s.duration_minutes} мин")
+                lines.append(f"{idx}. {s.name} — {int(s.price)}, {s.duration_minutes} мин")
 
             set_client_state(
-                message.from_user.id,
+                user_id,
                 ClientState(master_id=master.id, stage="choose_service"),
             )
 
@@ -78,7 +102,104 @@ async def cmd_start(message: Message) -> None:
         finally:
             db.close()
 
-    await message.answer(ru.MASTER_ENTER_NAME)
+    # Нет payload — кнопки (и текст как запасной вариант)
+    _ROLE_CHOICE_PENDING.add(user_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Мастер", callback_data="role:master")],
+        [InlineKeyboardButton(text="Клиент", callback_data="role:client")],
+    ])
+    await message.answer("Кем вы являетесь?", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.in_({"role:master", "role:client"}))
+async def handle_role_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+    user_id = callback.from_user.id
+    _ROLE_CHOICE_PENDING.discard(user_id)
+    if callback.data == "role:master":
+        await callback.message.answer(ru.MASTER_ENTER_NAME)
+        return
+    # role:client
+    db_session_maker = get_session_maker()
+    db = db_session_maker()
+    try:
+        masters = (
+            db.query(MasterProfileORM)
+            .join(
+                ClientSavedMasterORM,
+                (ClientSavedMasterORM.master_id == MasterProfileORM.id)
+                & (ClientSavedMasterORM.tg_user_id == user_id),
+            )
+            .order_by(MasterProfileORM.display_name)
+            .all()
+        )
+        if not masters:
+            await callback.message.answer(ru.CLIENT_NO_MASTERS)
+            return
+        set_client_state(
+            user_id,
+            ClientState(
+                master_id=0,
+                stage="choose_master",
+                master_ids=[m.id for m in masters],
+            ),
+        )
+        lines = [ru.CLIENT_CHOOSE_MASTER, ""]
+        for idx, m in enumerate(masters, start=1):
+            lines.append(f"{idx}. {m.display_name}")
+        await callback.message.answer("\n".join(lines))
+    finally:
+        db.close()
+
+
+@router.message(
+    F.text & ~F.via_bot,
+    lambda m: m.from_user.id in _ROLE_CHOICE_PENDING,
+)
+async def handle_role_choice(message: Message) -> None:
+    user_id = message.from_user.id
+    _ROLE_CHOICE_PENDING.discard(user_id)
+    text = (message.text or "").strip().lower()
+
+    if text in ("мастер", "1", "master"):
+        await message.answer(ru.MASTER_ENTER_NAME)
+        return
+
+    if text in ("клиент", "2", "client"):
+        db_session_maker = get_session_maker()
+        db = db_session_maker()
+        try:
+            masters = (
+                db.query(MasterProfileORM)
+                .join(
+                    ClientSavedMasterORM,
+                    (ClientSavedMasterORM.master_id == MasterProfileORM.id)
+                    & (ClientSavedMasterORM.tg_user_id == user_id),
+                )
+                .order_by(MasterProfileORM.display_name)
+                .all()
+            )
+            if not masters:
+                await message.answer(ru.CLIENT_NO_MASTERS)
+                return
+            set_client_state(
+                user_id,
+                ClientState(
+                    master_id=0,
+                    stage="choose_master",
+                    master_ids=[m.id for m in masters],
+                ),
+            )
+            lines = [ru.CLIENT_CHOOSE_MASTER, ""]
+            for idx, m in enumerate(masters, start=1):
+                lines.append(f"{idx}. {m.display_name}")
+            await message.answer("\n".join(lines))
+        finally:
+            db.close()
+        return
+
+    _ROLE_CHOICE_PENDING.add(user_id)
+    await message.answer("Напишите <b>мастер</b> или <b>клиент</b> (или 1 / 2).")
 
 
 @router.message(
