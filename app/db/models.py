@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     Column,
@@ -25,7 +26,7 @@ Base = declarative_base()
 class UserORM(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)  # Telegram user id
     username = Column(String, nullable=True)
     language_code = Column(String, nullable=True)
     is_master = Column(Boolean, default=False, nullable=False)
@@ -37,7 +38,7 @@ class MasterProfileORM(Base):
     __tablename__ = "master_profiles"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False, unique=True)
     display_name = Column(String, nullable=False)
     timezone = Column(String, nullable=False)
     slug = Column(String, nullable=False, unique=True)
@@ -100,7 +101,7 @@ class ClientProfileORM(Base):
     __tablename__ = "client_profiles"
 
     id = Column(Integer, primary_key=True)
-    tg_user_id = Column(Integer, nullable=False)
+    tg_user_id = Column(BigInteger, nullable=False)  # Telegram user id
     name = Column(String, nullable=False)
     username = Column(String, nullable=True)
     phone = Column(String, nullable=True)
@@ -113,7 +114,7 @@ class ClientSavedMasterORM(Base):
     __tablename__ = "client_saved_masters"
 
     id = Column(Integer, primary_key=True)
-    tg_user_id = Column(Integer, nullable=False)
+    tg_user_id = Column(BigInteger, nullable=False)  # Telegram user id
     master_id = Column(Integer, ForeignKey("master_profiles.id"), nullable=False)
 
     __table_args__ = (UniqueConstraint("tg_user_id", "master_id", name="uq_client_saved_master"),)
