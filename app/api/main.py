@@ -13,6 +13,7 @@ from app.config import configure_logging, get_settings
 from app.bot.bot_factory import create_bot_and_dispatcher
 from app.bot.webhook import setup_webhook_routes
 from app.api.client_routes import router as client_router
+from app.api.mock_csv_routes import router as mock_csv_router
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
 
     setup_webhook_routes(app, bot, dispatcher, settings)
     app.include_router(client_router)
+    app.include_router(mock_csv_router)
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
